@@ -20,23 +20,24 @@ Configure the Linux terminal with the exact same COM settings as the Windows ver
 # User Interface setup
 To make visualization of the graphs possible, we decided to use xfce4 as our desktop environment, connected remotly through XRDP but any lightweight Linux desktop environment should work just fine.
 
-- install xfce4
+# Install xfce4
 First you will need an ethernet connection to the board, from here use the following series of commands:
-sudo apt update
-sudo apt upgrade
-sudo apt install xfce4-goodies xfce4
+- sudo apt update
+- sudo apt upgrade
+- sudo apt install xfce4-goodies xfce4
+  
 https://linuxconfig.org/guide-to-installing-xfce-desktop-on-ubuntu-linux
 
-- install XRDP
-sudo apt install xrdp
-sudo systemctl enable xrdp
-sudo systemctl start xrdp
+# install XRDP
+- sudo apt install xrdp/n
+- sudo systemctl enable xrdp/n
+- sudo systemctl start xrdp/n
 
-- install basic packages
+# install basic packages
 
 Run the following script to install the basic libraries used in the application:
-sudo apt-get update -y
-python3 -m pip install -U pyqtgraph
+- sudo apt-get update -y
+- python3 -m pip install -U pyqtgraph
 
 
 
