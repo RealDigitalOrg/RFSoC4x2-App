@@ -34,8 +34,10 @@ sudo systemctl start xrdp
 
 - install basic packages
 
-Run the following script to install the basic packages used in the application:
-./install_basic_packages.sh
+Run the following script to install the basic libraries used in the application:
+sudo apt-get update -y
+python3 -m pip install -U pyqtgraph
+
 
 
 # Accessing the hardware file
@@ -43,3 +45,4 @@ To access the hardware file, go to the /home/xilinx/pynq/overlays/base/base.bit 
 This file is the hardware file for the RFSoC 4x2 board.
 
 # Running the application
+
