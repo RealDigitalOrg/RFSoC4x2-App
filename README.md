@@ -17,9 +17,8 @@ https://linuxconfig.org/guide-to-installing-xfce-desktop-on-ubuntu-linux
 # install basic packages
 
 Run the following script to install the basic libraries used in the application:
-- sudo apt-get update -y
-- pip install Pyside6
-- pip install PySide6 pyqtgraph
+- chmod +x install_packages.sh
+- ./install_packages.sh
 
 
 # Running the application
