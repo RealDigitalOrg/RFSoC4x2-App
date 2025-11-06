@@ -20,7 +20,7 @@ Configure the Linux terminal with the exact same COM settings as the Windows ver
 # User Interface setup
 To make visualization of the graphs possible, we decided to use xfce4 as our desktop environment, connected remotly through XRDP but any lightweight Linux desktop environment should work just fine.
 
-# Install xfce4
+# Install Xfce4
 First you will need an ethernet connection to the board, from here use the following series of commands:
 - sudo apt update
 - sudo apt upgrade
