@@ -29,15 +29,17 @@ First you will need an ethernet connection to the board, from here use the follo
 https://linuxconfig.org/guide-to-installing-xfce-desktop-on-ubuntu-linux
 
 # install XRDP
-- sudo apt install xrdp/n
-- sudo systemctl enable xrdp/n
-- sudo systemctl start xrdp/n
+- sudo apt install xrdp
+- sudo systemctl enable xrdp
+- sudo systemctl start xrdp
 
 # install basic packages
 
 Run the following script to install the basic libraries used in the application:
 - sudo apt-get update -y
-- python3 -m pip install -U pyqtgraph
+- pip install Pyside6
+- pip install PySide6 pyqtgraph
+- 
 
 
 
