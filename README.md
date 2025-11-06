@@ -1,7 +1,7 @@
 # RFSoC 4x2 ADC DAC Oscilloscope and Function Generator
 Using the ADC and DAC stored in the RFSoC 4x2, we can build an oscilloscope and function generator. The ADC and DAC inside the board will generate and capture sine wave and work like an oscilloscope and function generator. Therefore, when needing a simple data collection or signal generation, this board can be a good choice then having two big machines by your side.
 
-#Things to do before running the application
+# Things to do before running the application
 - Reference tutorial: https://github.com/realdigitalorg/rfsoc4x2-bsp
 
 After acquiring the RfSoC 4x2 board, the MicroSD card that is supplied has the majority of the necessary files which will be used for its setup. 
