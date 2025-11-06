@@ -19,6 +19,7 @@ https://linuxconfig.org/guide-to-installing-xfce-desktop-on-ubuntu-linux
 
 # Downloading the application
 git clone this repository to your PYNQ environment
+- git clone https://github.com/RealDigitalOrg/RFSoC4x2-App.git
 
 # install basic packages
 
