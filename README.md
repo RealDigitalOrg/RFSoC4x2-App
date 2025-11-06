@@ -23,4 +23,6 @@ Run the following script to install the basic libraries used in the application:
 
 
 # Running the application
-Run the Executalbe 
+Make the file executable using the chmod +x 
+Run the Executable program. 
+
