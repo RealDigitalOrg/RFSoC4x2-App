@@ -43,3 +43,5 @@ Run the Executable program .desktop file.
 
 
 For detailed guidelines refer to the tutorial.pdf in the repository
+
+https://github.com/RealDigitalOrg/RFSoC4x2-App/blob/c7a1797f0db9a3f2f5a93525c43ee725a9baccb3/Tutorial%20List.pdf
