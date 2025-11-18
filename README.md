@@ -41,3 +41,5 @@ Make the application python file executable using the chmod +x .
   
 Run the Executable program .desktop file. 
 
+
+For detailed guidelines refer to the tutorial.pdf in the repository
