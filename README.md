@@ -35,7 +35,7 @@ Make the application python file executable using the chmod +x .
 - When running the program
   - open the program with mousepad or text editor
   - look for " Exec= " section
-  - change "/home/xilinx/jupyter_notebooks/spectrum-analyzer/something.py" into your OWN directory, where you saved the files.
+  - change "/home/xilinx/jupyter_notebooks/spectrum-analyzer/RFSoC_4x2_scope.py" into your OWN directory, where you saved the files.
   - you can move the file to this directory as well.
  
   
