@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=RFSoC_TestTwo
 Comment=custom RFSoC Script
-Exec=sudo -E /usr/local/share/pynq-venv/bin/python /home/xilinx/jupyter_notebooks/spectrum-analyzer/unrealworking.py
+Exec=sudo -E /usr/local/share/pynq-venv/bin/python /home/xilinx/jupyter_notebooks/spectrum-analyzer/RFSoC4x2_Scope.py
 Icon=/home/xilinx/jupyter_notebooks/spectrum-analyzer/images/rick.jpg
 Terminal=true
 Type=Application
