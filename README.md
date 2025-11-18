@@ -29,6 +29,15 @@ Run the following script to install the basic libraries used in the application:
 
 
 # Running the application
-Make the file executable using the chmod +x 
+Make the application python file executable using the chmod +x .
+
+- " ScopeApp.desktop "
+- when running the program
+  - open the program with mousepad or text editor
+  - look for " Exec= " section
+  - change "/home/xilinx/jupyter_notebooks/spectrum-analyzer/something.py" into your OWN directory, where you saved the files.
+  - you can move the file to this directory as well.
+ 
+  
 Run the Executable program. 
 
