@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+
+# RFSoC 4x2 — Dual scope (TX0→RX2, TX1→RX3)
+
+# Auto RX NCO tracking for external signals (when TX disabled)
+
+# UI: two TX panes above their plots, plus Autoset + Pause/Resume per ADC
+
+
+
 import os, math, numpy as np
 
 os.environ.setdefault("QT_API", "pyside6")
@@ -12,9 +22,9 @@ from pynq.overlays.base import BaseOverlay
 
 
 
-# base system variables
+#  System / plot
 
-FS_HZ_FALLBACK = 2.458e6
+FS_HZ_FALLBACK = 2.458e9
 
 N_SAMPLES      = 4096
 
@@ -22,13 +32,13 @@ INTERVAL_MS    = 120
 
 DECIM          = 2
 
-
+ADC_NCO_HZ = 1.2288e9
 
 ADC_BITS       = 14
 
-RAW_FS_COUNTS  = float(2 ** (ADC_BITS - 1))  # 8192
+RAW_FS_COUNTS  = float(2 ** (ADC_BITS - 1))
 
-ASSUMED_FS_VPP = 1.00  # Full scale voltage peak to peak
+ASSUMED_FS_VPP = 1.00
 
 
 
@@ -40,7 +50,7 @@ NCO_OFFSET_HZ = {2: 10_000.0, 3: 10_000.0}
 
 
 
-# DAC amplitude polynomial 
+#  DAC amplitude poly
 
 def cal_scale_poly(f_mhz: float) -> float:
 
@@ -78,35 +88,11 @@ def volts_to_vpp(value: float, unit: str) -> float:
 
 
 
-# Attenuation models
-
-# LUT for TX0→RX2
-
-ATT_LUT_RX2 = [
-
-    (5.0,  15.29),
-
-    (10.0, 13.73),
-
-    (20.0, 13.03),
-
-    (50.0, 12.63),
-
-    (70.0, 12.62),
-
-    (80.0, 12.63),
-
-    (90.0, 12.67),
-
-]
-
-
-
-# LUT for TX1→RX3
+#  Attenuation models
 
 ATT_LUT_RX3 = [
 
-    (5.0,  15.51),
+    (5.0, 15.51),
 
     (10.0, 13.94),
 
@@ -134,31 +120,35 @@ def _interp_att(points, f_mhz: float) -> float:
 
         if x0 <= f_mhz <= x1:
 
-            t = 0.0 if x1 == x0 else (f_mhz - x0)/(x1 - x0)
+            t = (f_mhz - x0)/(x1 - x0)
 
-            return float(y0*(1.0 - t) + y1*t)
+            return float(y0*(1-t)+y1*t)
 
     return float(pts[-1][1])
 
 
 
+_RX2_A,_RX2_B,_RX2_C,_RX2_D = (-2.31872862e-05, 4.10331001e-03, -2.19793859e-01, 1.59878476e+01)
+
+def _atten_rx2_poly_db(f_mhz: float) -> float:
+
+    f = max(5.0, min(100.0, float(f_mhz)))
+
+    return ((_RX2_A*f + _RX2_B)*f + _RX2_C)*f + _RX2_D
+
+
+
 def atten_db_lookup(rx_idx: int, f_mhz: float) -> float:
 
-    """Path attenuation (dB) at RF frequency. Clamp and linearly interpolate."""
+    if rx_idx == 2:
 
-    if rx_idx == 2:   # TX0 → RX2
-
-        return _interp_att(ATT_LUT_RX2, f_mhz)
-
-    if rx_idx == 3:   # TX1 → RX3
-
-        return _interp_att(ATT_LUT_RX3, f_mhz)
+        return _atten_rx2_poly_db(f_mhz)
 
     return _interp_att(ATT_LUT_RX3, f_mhz)
 
 
 
-# TX helpers
+#  TX helpers
 
 def set_mixer(tx, freq_mhz: float):
 
@@ -166,238 +156,253 @@ def set_mixer(tx, freq_mhz: float):
 
         tx.dac_block.MixerSettings["Freq"] = float(freq_mhz)
 
-        for k, v in [("PhaseOffset", 0.0), ("EventSource", 0)]:
+        for k,v in [("PhaseOffset",0.0),("EventSource",0)]:
 
-            try: tx.dac_block.MixerSettings[k] = v
+            try: tx.dac_block.MixerSettings[k]=v
 
-            except Exception: pass
+            except: pass
 
-    except Exception: pass
+    except: pass
 
 
 
 def select_amplitude_source(tx):
 
-    for attr, val in [("source","amplitude"), ("data_sel","amplitude"), ("data_source","amplitude")]:
+    for attr,val in [("source","amplitude"),("data_sel","amplitude"),("data_source","amplitude")]:
 
         try:
 
-            setattr(tx, attr, val); return
+            setattr(tx,attr,val)
 
-        except Exception: pass
+            return
+
+        except:
+
+            pass
 
 
 
 def write_I_only_gain(ctrl, gain_0_to_1: float):
 
-    scaled  = int(round(max(0.0, min(1.0, gain_0_to_1)) * 0x7FFF))
+    scaled=int(round(max(0.0,min(1.0,gain_0_to_1))*0x7FFF))
 
-    int_reg = (scaled & 0xFFFF) | (0 << 16)
-
-    ctrl.write(0x04, int_reg)
+    ctrl.write(0x04, (scaled&0xFFFF)|(0<<16))
 
 
 
-def apply_tx_config(tx, freq_mhz: float, request_val: float, request_unit: str):
+def apply_tx_config(tx, freq_mhz: float, request_val: float, request_unit: str, use_poly=True):
 
-    """Always applies polynomial on TX amplitude scaling."""
+    req_vpp=volts_to_vpp(request_val,request_unit)
 
-    req_vpp    = volts_to_vpp(request_val, request_unit)
+    scale=cal_scale_poly(freq_mhz)
 
-    scale      = cal_scale_poly(freq_mhz) 
+    target_vpp=req_vpp*scale
 
-    target_vpp = req_vpp * scale
+    gain=max(0.0,min(1.0,target_vpp/DAC_VFS_VPP_I_ONLY))
 
-    gain = max(0.0, min(1.0, target_vpp / DAC_VFS_VPP_I_ONLY))
-
-    tx.control.enable = False
+    tx.control.enable=False
 
     select_amplitude_source(tx)
 
-    set_mixer(tx, freq_mhz)
+    set_mixer(tx,freq_mhz)
 
-    try: write_I_only_gain(tx.control, gain)
+    try:
 
-    except Exception: tx.control.gain = float(gain)
+        write_I_only_gain(tx.control,gain)
 
-    tx.control.enable = True
+    except:
 
-    return {"req_vpp": req_vpp, "scale": scale, "target_vpp": target_vpp, "gain": gain}
+        tx.control.gain=float(gain)
+
+    tx.control.enable=True
+
+    return {"req_vpp":req_vpp,"scale":scale,"target_vpp":target_vpp,"gain":gain}
 
 
 
-# ADC helpers 
+#  ADC helpers
 
 def normalize_adc_if_needed(y: np.ndarray):
 
-    m = float(np.max(np.abs(y)))
+    m=float(np.max(np.abs(y)))
 
-    if m > 2.5:
+    if m>2.5:
 
-        return (y.astype(np.float32) / RAW_FS_COUNTS), True
+        return (y.astype(np.float32)/RAW_FS_COUNTS),True
 
-    return y.astype(np.float32), False
-
-
-
-def remove_dc(y: np.ndarray) -> np.ndarray:
-
-    return y - np.mean(y)
+    return y.astype(np.float32),False
 
 
 
-def measure_vpp_fs(y_fs_zero_mean: np.ndarray) -> float:
+def remove_dc(y): return y-np.mean(y)
 
-    return float(np.max(y_fs_zero_mean) - np.min(y_fs_zero_mean))
+def measure_vpp_fs(y): return float(np.max(y)-np.min(y))
 
-
-
-def vrms_from_vpp(vpp_volts: float) -> float:
-
-    return vpp_volts / (2.0 * math.sqrt(2.0))
+def vrms_from_vpp(v): return v/(2.0*math.sqrt(2.0))
 
 
 
-def get_ddc_scale_if_any(rx) -> float:
+def get_ddc_scale_if_any(rx)->float:
 
-    candidates = []
+    candidates=[]
 
-    for path in [
+    for path in [("adc_block","FineMixerScale"),("adc_block","MixerScale"),
 
-        ("adc_block","FineMixerScale"),
-
-        ("adc_block","MixerScale"),
-
-        ("adc_block","DecimationGain"),
-
-        ("block","DecimationGain"),
-
-        ("control","gain"),
-
-    ]:
+                 ("adc_block","DecimationGain"),("block","DecimationGain"),("control","gain")]:
 
         try:
 
-            obj = rx
+            obj=rx
 
-            for a in path: obj = getattr(obj, a)
+            for a in path:
 
-            v = float(obj)
+                obj=getattr(obj,a)
 
-            if v > 0.0: candidates.append(v)
+            v=float(obj)
 
-        except Exception: pass
+            if v>0.0:
 
-    if not candidates: return 1.0
+                candidates.append(v)
 
-    try: return float(sorted(candidates)[-1])
+        except:
 
-    except Exception: return 1.0
+            pass
+
+    if not candidates:
+
+        return 1.0
+
+    return float(sorted(candidates)[-1])
 
 
 
-def vpp_fs_to_volts(vpp_fs: float, fs_vpp_est: float, ddc_scale: float = 1.0) -> float:
+def vpp_fs_to_volts(vpp_fs,fs_vpp_est,ddc_scale=1.0):
 
-    return vpp_fs * (fs_vpp_est / 2.0) * ddc_scale
+    return vpp_fs*(fs_vpp_est/2.0)*ddc_scale
 
 
 
-# UI panes
+#  UI panes
 
 class TxPane(QtWidgets.QGroupBox):
 
-    def __init__(self, title: str, tx_idx: int, init_freq: float):
+    def __init__(self,title,tx_idx,init_freq,cal_enabled_getter):
 
         super().__init__(title)
 
-        self.tx_idx = tx_idx
+        self.tx_idx=tx_idx
 
-        g = QtWidgets.QGridLayout(self)
+        self._get_use_poly=cal_enabled_getter
 
-
-
-        self.enable = QtWidgets.QCheckBox("Enable"); self.enable.setChecked(True)
-
-        g.addWidget(self.enable, 0, 0)
+        g=QtWidgets.QGridLayout(self)
 
 
 
-        g.addWidget(QtWidgets.QLabel("Freq (MHz)"), 0, 1)
+        self.enable=QtWidgets.QCheckBox("Enable")
 
-        self.freq = QtWidgets.QDoubleSpinBox()
+        self.enable.setChecked(True)
 
-        self.freq.setRange(0.0, 6000.0); self.freq.setDecimals(6); self.freq.setSingleStep(0.01)
+        g.addWidget(self.enable,0,0)
+
+
+
+        g.addWidget(QtWidgets.QLabel("Freq (MHz)"),0,1)
+
+        self.freq=QtWidgets.QDoubleSpinBox()
+
+        self.freq.setRange(0.0,6000.0)
+
+        self.freq.setDecimals(6)
+
+        self.freq.setSingleStep(0.01)
 
         self.freq.setValue(init_freq)
 
-        g.addWidget(self.freq, 0, 2)
+        g.addWidget(self.freq,0,2)
 
 
 
-        g.addWidget(QtWidgets.QLabel("Amplitude"), 1, 0)
+        g.addWidget(QtWidgets.QLabel("Amplitude"),1,0)
 
-        self.amp = QtWidgets.QDoubleSpinBox()
+        self.amp=QtWidgets.QDoubleSpinBox()
 
-        self.amp.setDecimals(4); self.amp.setRange(0.0, 5.0); self.amp.setValue(0.50)
+        self.amp.setDecimals(4)
 
-        g.addWidget(self.amp, 1, 1)
+        self.amp.setRange(0.0,5.0)
 
+        self.amp.setValue(0.50)
 
-
-        self.unit = QtWidgets.QComboBox(); self.unit.addItems(["Vpp","Vp","Vrms"])
-
-        g.addWidget(self.unit, 1, 2)
+        g.addWidget(self.amp,1,1)
 
 
 
-        self.apply = QtWidgets.QPushButton("Apply TX"); g.addWidget(self.apply, 0, 3, 2, 1)
+        self.unit=QtWidgets.QComboBox()
+
+        self.unit.addItems(["Vpp","Vp","Vrms"])
+
+        g.addWidget(self.unit,1,2)
+
+
+
+        self.apply=QtWidgets.QPushButton("Apply TX")
+
+        g.addWidget(self.apply,0,3,2,1)
 
         self.apply.clicked.connect(self.apply_now)
 
 
-        self.status = QtWidgets.QLabel("")
+
+        self.status=QtWidgets.QLabel("")
 
         self.status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
 
-        g.addWidget(self.status, 3, 0, 1, 4)
+        g.addWidget(self.status,2,0,1,4)
 
 
 
-        self._last = None
+        self._last=None
 
 
 
     def apply_now(self):
 
-        tx = base.radio.transmitter.channel[self.tx_idx]
+        tx=base.radio.transmitter.channel[self.tx_idx]
 
-        freq = self.freq.value()
+        freq=self.freq.value()
 
         if not self.enable.isChecked():
 
-            tx.control.enable = False
+            tx.control.enable=False
 
             self.status.setText(f"TX{self.tx_idx} disabled.")
 
             return
 
-        info = apply_tx_config(
+        info=apply_tx_config(
 
-            tx, freq_mhz=freq,
+            tx,
+
+            freq_mhz=freq,
 
             request_val=self.amp.value(),
 
             request_unit=self.unit.currentText(),
 
+            use_poly=self._get_use_poly(),
+
         )
 
-        self._last = info
+        self._last=info
 
-        self.status.setText(f"TX{self.tx_idx} @ {freq:.6f} MHz, {self.amp.value():.4g} {self.unit.currentText()} applied.")
+        self.status.setText(
+
+            f"TX{self.tx_idx} @ {freq:.6f} MHz, {self.amp.value():.4g} {self.unit.currentText()} applied."
+
+        )
 
 
 
-# Main widget
+#  Main widget
 
 class Main(QtWidgets.QWidget):
 
@@ -405,109 +410,100 @@ class Main(QtWidgets.QWidget):
 
         super().__init__()
 
-        self.setWindowTitle("RFSoC 4x2 — Clean UI: Loopback de-embed (+pre-poly), Ext-gen shows ADC-pin volts")
+        self.setWindowTitle("RFSoC 4x2 — Dual Scope + Auto NCO Tracking")
 
-        self.resize(1520, 820)
+        self.resize(1520,820)
 
         pg.setConfigOptions(antialias=False)
 
 
 
-        self.fs_vpp_est = ASSUMED_FS_VPP
+        self.fs_hz=self._detect_fs_hz(FS_HZ_FALLBACK)
 
-        self.fs_hz = self._detect_fs_hz(FS_HZ_FALLBACK)
-
-
-
-        root = QtWidgets.QVBoxLayout(self)
+        self.nco_track={2:0.0,3:0.0}
 
 
 
-        # Controls row aligned with plots (two-column grid)
-
-        controls = QtWidgets.QGridLayout()
-
-        controls.setColumnStretch(0, 1)
-
-        controls.setColumnStretch(1, 1)
-
-        root.addLayout(controls)
+        root=QtWidgets.QVBoxLayout(self)
 
 
 
-        self.tx0 = TxPane("TX0 → RX2", tx_idx=0, init_freq=20.00)
+        # One 2-column grid: row0=TX panes, row1=plots, row2=buttons, row3=readouts
 
-        self.tx1 = TxPane("TX1 → RX3", tx_idx=1, init_freq=20.00)
+        grid=QtWidgets.QGridLayout()
 
-        controls.addWidget(self.tx0, 0, 0)   # left column
+        grid.setColumnStretch(0,1)
 
-        controls.addWidget(self.tx1, 0, 1)   # right column
+        grid.setColumnStretch(1,1)
 
-
-
-        # initial apply + NCOs
-
-        self.tx0.apply_now(); self.tx1.apply_now()
-
-        for tx_idx in TX_TO_RX: self._set_rx_nco_for(tx_idx)
+        root.addLayout(grid,1)
 
 
 
-        self.tx0.freq.valueChanged.connect(lambda _=None: self._on_freq_changed(0))
+        # TX panes aligned above each plot
 
-        self.tx1.freq.valueChanged.connect(lambda _=None: self._on_freq_changed(1))
+        self.tx0=TxPane("TX0→RX2",0,20.00,lambda: True)
 
+        self.tx1=TxPane("TX1→RX3",1,20.00,lambda: True)
 
+        grid.addWidget(self.tx0,0,0)
 
-        # Plots (two columns)
-
-        grid = QtWidgets.QGridLayout(); root.addLayout(grid, 1)
-
-        grid.setColumnStretch(0, 1)
-
-        grid.setColumnStretch(1, 1)
+        grid.addWidget(self.tx1,0,1)
 
 
 
-        # Time base in microseconds
+        self.tx0.apply_now()
 
-        self.t_us = (np.arange(N_SAMPLES) / self.fs_hz) * 1e6
+        self.tx1.apply_now()
 
-        self.t_us_dec = self.t_us[::max(1, DECIM)]
+        for tx_idx,_ in TX_TO_RX.items():
 
-
-
-        self.curves, self.readouts = {}, {}
-
-        self.plots, self.pause_btns, self.paused = {}, {}, {}
-
-        self.last_wave = {}  # store last t,y for Autoset
+            self._set_rx_nco_for(tx_idx)
 
 
 
-        for col, rx_idx in enumerate(RX_LIST):
+        # Time base (µs)
 
-            pw = pg.PlotWidget(title=f"ADC {rx_idx} — Loopback: de-embed (+pre-poly); Ext-gen: ADC-pin volts")
+        self.t_us=(np.arange(N_SAMPLES)/self.fs_hz)*1e6
 
-            pw.showGrid(x=True, y=True, alpha=0.25)
-
-            pw.getAxis('bottom').enableAutoSIPrefix(False)
-
-            pw.setLabel("bottom", "Time", units="ms")
-
-            pw.setLabel("left", "Amplitude (V)")
-
-            c = pw.plot(self.t_us_dec, np.zeros_like(self.t_us_dec), pen=pg.mkPen(width=1.3))
-
-            grid.addWidget(pw, 0, col)
-
-            self.curves[rx_idx] = c
-
-            self.plots[rx_idx] = pw
+        self.t_us_dec=self.t_us[::max(1,DECIM)]
 
 
 
-            # Buttons row: Autoset + Pause/Resume
+        self.curves,self.readouts = {},{}
+
+        self.plots = {}
+
+        self.pause_btns, self.paused = {}, {}
+
+        self.last_wave = {}
+
+        
+# Plots + buttons + readouts
+
+        for col,rx_idx in enumerate(RX_LIST):
+
+            pw=pg.PlotWidget(title=f"ADC {rx_idx} — Auto NCO Tracking")
+
+            pw.showGrid(x=True,y=True,alpha=0.25)
+
+            pw.getAxis("bottom").enableAutoSIPrefix(False)
+
+            pw.setLabel("bottom","Time","μs")
+
+            pw.setLabel("left","Amplitude (V)")
+
+            c=pw.plot(self.t_us_dec,np.zeros_like(self.t_us_dec),pen=pg.mkPen(width=1.3))
+
+            grid.addWidget(pw,1,col)
+
+            self.curves[rx_idx]=c
+
+            self.plots[rx_idx]=pw
+
+
+
+            # Autoset + Pause/Resume buttons
 
             btn_row = QtWidgets.QHBoxLayout()
 
@@ -521,7 +517,7 @@ class Main(QtWidgets.QWidget):
 
             btn_row.addStretch(1)
 
-            grid.addLayout(btn_row, 1, col)
+            grid.addLayout(btn_row,2,col)
 
 
 
@@ -535,15 +531,15 @@ class Main(QtWidgets.QWidget):
 
 
 
-            ro = QtWidgets.QLabel("Vpp≈0.000 V   Vrms≈0.000 V   Mode=—   f_RF≈— MHz   Atten≈— dB")
+            ro=QtWidgets.QLabel("Vpp≈0.000 V  Vrms≈0.000 V  Freq≈— MHz")
 
-            grid.addWidget(ro, 2, col, alignment=QtCore.Qt.AlignLeft)
+            grid.addWidget(ro,3,col,alignment=QtCore.Qt.AlignLeft)
 
-            self.readouts[rx_idx] = ro
+            self.readouts[rx_idx]=ro
 
 
 
-        self.timer = QtCore.QTimer(self)
+        self.timer=QtCore.QTimer(self)
 
         self.timer.setInterval(INTERVAL_MS)
 
@@ -551,8 +547,9 @@ class Main(QtWidgets.QWidget):
 
         self.timer.start()
 
-   
- # Helpers/UI wiring   
+
+
+    #  Autoset / Pause
 
     def _autoset(self, rx_idx: int):
 
@@ -560,13 +557,15 @@ class Main(QtWidgets.QWidget):
 
         Zoom to a clear waveform view:
 
-          - Estimate frequency from the currently plotted (decimated) data
+          - Use last decimated waveform
 
-          - Show ~6 cycles (clamped to data length)
+          - Estimate frequency
 
-          - Y-scale to ±(robust peak*1.15), centered at 0
+          - Show ~6 cycles (or a minimum window)
 
-        Falls back to full autoRange if frequency is unclear.
+          - Scale Y around ±(amp * 1.15)
+
+        Falls back to autoRange if anything looks weird.
 
         """
 
@@ -574,7 +573,7 @@ class Main(QtWidgets.QWidget):
 
             t_us, y = self.last_wave.get(rx_idx, (None, None))
 
-            if t_us is None or len(y) < 16:
+            if t_us is None or y is None or len(y) < 16:
 
                 self.plots[rx_idx].autoRange()
 
@@ -582,7 +581,7 @@ class Main(QtWidgets.QWidget):
 
 
 
-            # Estimate frequency from decimated data
+            # Estimate frequency from the decimated data
 
             fs_dec_hz = self.fs_hz / max(1, DECIM)
 
@@ -598,11 +597,11 @@ class Main(QtWidgets.QWidget):
 
 
 
-            # Choose a window of ~6 cycles (ensure a minimum window size)
+            # Window ~6 cycles, with a minimum fraction of the record
 
             n_cycles = 6.0
 
-            T_us = (1.0 / f_est_hz) * 1e6  # period in microseconds
+            T_us = (1.0 / f_est_hz) * 1e6
 
             win_us = max(T_us * n_cycles, (t_us[-1] - t_us[0]) * 0.08)
 
@@ -612,7 +611,7 @@ class Main(QtWidgets.QWidget):
 
 
 
-            # Robust amplitude estimate & padding
+            # Robust amplitude estimate + padding
 
             if len(y0) > 3:
 
@@ -640,9 +639,13 @@ class Main(QtWidgets.QWidget):
 
         except Exception:
 
-            try: self.plots[rx_idx].autoRange()
+            try:
 
-            except Exception: pass
+                self.plots[rx_idx].autoRange()
+
+            except Exception:
+
+                pass
 
 
 
@@ -652,29 +655,53 @@ class Main(QtWidgets.QWidget):
 
         self.pause_btns[rx_idx].setText("Resume" if self.paused[rx_idx] else "Pause")
 
-        txt = self.readouts[rx_idx].text().split("   ")
+
+
+        txt_parts = self.readouts[rx_idx].text().split("   ")
 
         if self.paused[rx_idx]:
 
-            if not any(s.startswith("PAUSED") for s in txt):
+            if not any(s.startswith("PAUSED") for s in txt_parts):
 
-                txt.insert(0, "PAUSED")
+                txt_parts.insert(0, "PAUSED")
 
         else:
 
-            txt = [s for s in txt if not s.startswith("PAUSED")]
+            txt_parts = [s for s in txt_parts if not s.startswith("PAUSED")]
 
-        self.readouts[rx_idx].setText("   ".join(txt))
-
-
-
-    def _on_freq_changed(self, tx_idx: int):
-
-        self._set_rx_nco_for(tx_idx)
+        self.readouts[rx_idx].setText("   ".join(txt_parts))
 
 
 
-    def _set_rx_nco_for(self, tx_idx: int):
+    #  Helpers
+
+    def _auto_track_rx_nco(self, rx_idx:int, f_bb_hz:float):
+
+        """Smoothly update RX NCO to follow external signal frequency."""
+
+        try:
+
+            current=float(RX[rx_idx].adc_block.MixerSettings["Freq"])
+
+            target=current + (f_bb_hz/1e6)
+
+            prev=self.nco_track[rx_idx]
+
+            new=0.9*prev + 0.1*target
+
+            step=max(-0.05,min(0.05,new-current))  # ±50 kHz per frame
+
+            RX[rx_idx].adc_block.MixerSettings["Freq"]=current+step
+
+            self.nco_track[rx_idx]=current+step
+
+        except Exception as e:
+
+            print(f"NCO track error RX{rx_idx}:",e)
+
+
+
+    def _set_rx_nco_for(self, tx_idx:int):
 
         rx_idx = TX_TO_RX[tx_idx]
 
@@ -682,23 +709,37 @@ class Main(QtWidgets.QWidget):
 
             pane = self._txpane_for_tx(tx_idx)
 
-            f_mhz = float(pane.freq.value())
+            rx = RX[rx_idx]
 
-            offset_mhz = (NCO_OFFSET_HZ.get(rx_idx, 10_000.0)) / 1e6
+            if pane.enable.isChecked():
 
-            RX[rx_idx].adc_block.MixerSettings["Freq"] = f_mhz - offset_mhz
+               f_mhz = float(pane.freq.value())
+
+               offset_mhz = (NCO_OFFSET_HZ.get(rx_idx, 10_000.0)) / 1e6
+
+               rx.adc_block.MixerSettings["Freq"] = f_mhz - offset_mhz
+
+            else:
+
+               rx.adc_block.MixerSettings["Freq"] = 0.0
+
+               print(f"RX{rx_idx} NCO bypass for external input.")
 
         except Exception as e:
 
             print(f"RX{rx_idx} NCO set failed:", e)
 
+    def _txpane_for_tx(self,tx_idx):
+
+        return self.tx0 if tx_idx==0 else self.tx1
 
 
-    def _txpane_for_rx(self, rx_idx: int) -> 'TxPane':
 
-        for tx_idx, rxi in TX_TO_RX.items():
+    def _txpane_for_rx(self,rx_idx):
 
-            if rxi == rx_idx:
+        for tx_idx,rxi in TX_TO_RX.items():
+
+            if rxi==rx_idx:
 
                 return self._txpane_for_tx(tx_idx)
 
@@ -706,17 +747,79 @@ class Main(QtWidgets.QWidget):
 
 
 
-    def _txpane_for_tx(self, tx_idx: int) -> 'TxPane':
+    def _detect_fs_hz(self,fallback):
 
-        return self.tx0 if tx_idx == 0 else self.tx1
+        cand=[]
+
+        try:
+
+            for rx_idx in RX_LIST:
+
+                rx=RX[rx_idx]
+
+                for path in [("adc_block","SamplingRate"),("adc_block","SampleRate"),
+
+                             ("adc_block","Fs"),("adc_block","Fs_Hz"),
+
+                             ("block","SamplingRate"),("block","SampleRate"),
+
+                             ("control","SamplingRate")]:
+
+                    try:
+
+                        obj=rx
+
+                        for a in path:
+
+                            obj=getattr(obj,a)
+
+                        val=float(obj)
+
+                        if val>1e3:
+
+                            cand.append(val)
+
+                    except:
+
+                        pass
+
+        except:
+
+            pass
+
+        if cand:
+
+            try:
+
+                return float(sorted(cand)[-1])
+
+            except:
+
+                pass
+
+        return float(fallback)
 
 
 
-    def _get_rx_nco_mhz(self, rx_idx: int) -> float:
+    def _estimate_freq_hz(self,y_fs,fs_hz):
 
-        try: return float(RX[rx_idx].adc_block.MixerSettings["Freq"])
+        if len(y_fs)<4:
 
-        except Exception: return 0.0
+            return 0.0
+
+        y=y_fs-np.mean(y_fs)
+
+        Y=np.fft.rfft(y*np.hanning(len(y)))
+
+        mag=np.abs(Y)
+
+        if len(mag)<=1:
+
+            return 0.0
+
+        k=int(np.argmax(mag[1:]))+1
+
+        return float(k*fs_hz/len(y))
 
 
 
@@ -724,9 +827,11 @@ class Main(QtWidgets.QWidget):
 
         try:
 
-            fs_vpp = ASSUMED_FS_VPP  # fixed full-scale
+            fs_vpp = ASSUMED_FS_VPP  # fixed
 
             for rx_idx in RX_LIST:
+
+                # Skip updates if paused
 
                 if self.paused.get(rx_idx, False):
 
@@ -734,73 +839,51 @@ class Main(QtWidgets.QWidget):
 
 
 
-                pane = self._txpane_for_rx(rx_idx)
+                pane=self._txpane_for_rx(rx_idx)
 
 
 
-                try:
+                x=RX[rx_idx].transfer(N_SAMPLES)
 
-                    x = RX[rx_idx].transfer(N_SAMPLES)
+                y=np.real(x)
 
-                except Exception as e:
+                y_fs,_=normalize_adc_if_needed(y)
 
-                    print(f"RX{rx_idx} transfer error:", e); continue
-
-
-
-                y = np.real(x)
-
-                y_fs, _ = normalize_adc_if_needed(y)
-
-                y0 = remove_dc(y_fs)
-
-
-
+                y0=remove_dc(y_fs)
+#####
                 ddc_scale = get_ddc_scale_if_any(RX[rx_idx])
 
                 y_volts_adc = y0 * (fs_vpp / 2.0) * ddc_scale  # ADC-pin volts
 
 
 
-                # Determine RF for info
+                # Determine RF for info; choose mode
 
-                f_bb_hz = self._estimate_freq_hz(y0, self.fs_hz)
+                f_est_hz = self._estimate_freq_hz(y0, self.fs_hz)
 
-                if pane.enable.isChecked():
+                f_rf_mhz = (ADC_NCO_HZ - f_est_hz)/1e6
 
-                    # LOOPBACK MODE (TX enabled) — de-embed & pre-poly
+                atten_db = atten_db_lookup(rx_idx, f_rf_mhz)
 
-                    mode = "Loopback"
+                beta = 10.0 ** (atten_db / 20.0)
 
-                    f_rf_mhz = float(pane.freq.value())
+                if not pane.enable.isChecked():
 
-                    atten_db = atten_db_lookup(rx_idx, f_rf_mhz)
-
-                    beta = 10.0 ** (atten_db / 20.0)
-
-                    y_src = y_volts_adc * beta  # source (post-poly)
-
-                    y_src /= max(1e-9, cal_scale_poly(f_rf_mhz))  # divide out TX poly -> show requested (pre-poly)
+                	y_src = y_volts_adc * beta  # source (post-poly)
 
                 else:
 
-                    # EXTERNAL GENERATOR MODE (TX disabled) 
-
-                    mode = "Ext-gen"
-
-                    f_rf_mhz = abs(f_bb_hz)/1e6 + self._get_rx_nco_mhz(rx_idx)
-
-                    atten_db = 0.0
-
-                    y_src = y_volts_adc  # show ADC-pin volts directly
+                	y_src = (y_volts_adc * beta) / max(1e-9, cal_scale_poly(f_rf_mhz))
 
 
+###
 
-                # Plot (decimated) in µs domain
 
-                y_plot = y_src[::DECIM] if DECIM > 1 else y_src
+                # Plot (decimated)
 
-                self.curves[rx_idx].setData(self.t_us_dec, y_plot, _callSync="off")
+                y_plot=y_src[::DECIM] if DECIM > 1 else y_src
+
+                self.curves[rx_idx].setData(self.t_us_dec,y_plot,_callSync="off")
 
 
 
@@ -812,133 +895,43 @@ class Main(QtWidgets.QWidget):
 
                 # Readouts
 
-                vpp_fs  = measure_vpp_fs(y0)
+                vpp_src=measure_vpp_fs(y_src)
 
-                vpp_adc = vpp_fs_to_volts(vpp_fs, fs_vpp, ddc_scale)
-
-                if pane.enable.isChecked():
-
-                    vpp_src = vpp_adc * (10.0 ** (atten_db / 20.0))
-
-                    vpp_src /= max(1e-9, cal_scale_poly(float(pane.freq.value())))
-
-                else:
-
-                    vpp_src = vpp_adc  # ADC-pin in ext-gen mode
-
-                vrms_src = vrms_from_vpp(vpp_src)
-
-
+                vrms_src=vrms_from_vpp(vpp_src)
 
                 self.readouts[rx_idx].setText(
 
-                    f"Vpp≈{vpp_src:.3f} V   Vrms≈{vrms_src:.3f} V   "
-
-                    f"Mode={mode}   f_RF≈{f_rf_mhz:.3f} MHz   Atten≈{atten_db:.2f} dB"
+                    f"Vpp≈{vpp_src:.3f} V   Vrms≈{vrms_src:.3f} V   f_RF≈{f_rf_mhz:.3f} MHz"
 
                 )
 
         except Exception as e:
 
-            print("RX update error:", e)
+            print("RX update error:",e)
 
 
 
-    # Frequency reading
-
-    def _detect_fs_hz(self, fallback: float) -> float:
-
-        candidates = []
+    def _get_rx_nco(self,rx_idx):
 
         try:
 
-            for rx_idx in RX_LIST:
+            return float(RX[rx_idx].adc_block.MixerSettings["Freq"])
 
-                try: rx = RX[rx_idx]
+        except:
 
-                except Exception: continue
-
-                for path in [
-
-                    ("adc_block","SamplingRate"), ("adc_block","SampleRate"),
-
-                    ("adc_block","Fs"), ("adc_block","Fs_Hz"),
-
-                    ("block","SamplingRate"), ("block","SampleRate"),
-
-                    ("control","SamplingRate"),
-
-                ]:
-
-                    try:
-
-                        obj = rx
-
-                        for a in path: obj = getattr(obj, a)
-
-                        val = float(obj)
-
-                        if val > 1e3: candidates.append(val)
-
-                    except Exception: pass
-
-            try:
-
-                recv = base.radio.receiver
-
-                for attr in ["sample_rate","samplerate","fs_hz","Fs","Fs_Hz","SamplingRate","SampleRate"]:
-
-                    try:
-
-                        val = float(getattr(recv, attr))
-
-                        if val > 1e3: candidates.append(val)
-
-                    except Exception: pass
-
-            except Exception: pass
-
-        except Exception: pass
-
-        if candidates:
-
-            try: return float(sorted(candidates)[-1])
-
-            except Exception: pass
-
-        return float(fallback)
+            return 0.0
 
 
 
-    def _estimate_freq_hz(self, y_fs: np.ndarray, fs_hz: float) -> float:
-
-        if len(y_fs) < 4: return 0.0
-
-        y = y_fs - np.mean(y_fs)
-
-        w = np.hanning(len(y))
-
-        Y = np.fft.rfft(y * w)
-
-        mag = np.abs(Y)
-
-        if len(mag) <= 1: return 0.0
-
-        k = int(np.argmax(mag[1:])) + 1
-
-        return float(k * fs_hz / len(y))
-
-
-
-    def closeEvent(self, ev):
+    def closeEvent(self,ev):
 
         try:
 
             for ch in base.radio.transmitter.channel:
 
-                ch.control.enable = False
+                ch.control.enable=False
 
-        except Exception:
+        except:
 
             pass
 
@@ -946,23 +939,23 @@ class Main(QtWidgets.QWidget):
 
 
 
-# Main
+#  Bring-up
 
-base = BaseOverlay("base.bit")
+base=BaseOverlay("base.bit")
 
 base.init_rf_clks()
 
-TX = base.radio.transmitter.channel
+TX=base.radio.transmitter.channel
 
-RX = base.radio.receiver.channel
+RX=base.radio.receiver.channel
 
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
 
-    app = QtWidgets.QApplication([])
+    app=QtWidgets.QApplication([])
 
-    w = Main(); w.show()
+    w=Main();w.show()
 
     app.exec()
 
